@@ -63,7 +63,7 @@ module Expr =
                                                             
     (* Expression evaluator
 
-          val eval : env -> config -> t -> int * config
+          val eval : env -> config -> t -> config
 
 
        Takes an environment, a configuration and an expresion, and returns another configuration. The 
@@ -72,7 +72,7 @@ module Expr =
            method definition : env -> string -> int list -> config -> config
 
        which takes an environment (of the same type), a name of the function, a list of actual parameters and a configuration, 
-       an returns a pair: the return value for the call and the resulting configuration
+       an returns resulting configuration
     *)                                                       
     let rec eval env ((st, i, o, r) as conf) expr = failwith "Not implemented"
          
@@ -127,13 +127,8 @@ module Definition =
     (* The type for a definition: name, argument list, local variables, body *)
     type t = string * (string list * string list * Stmt.t)
 
-    ostap (
-      arg  : IDENT;
-      parse: %"fun" name:IDENT "(" args:!(Util.list0 arg) ")"
-         locs:(%"local" !(Util.list arg))?
-        "{" body:!(Stmt.parse) "}" {
-        (name, (args, (match locs with None -> [] | Some l -> l), body))
-      }
+    ostap (     
+      parse: empty {failwith "Not implemented"}
     )
 
   end
