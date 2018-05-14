@@ -128,8 +128,6 @@ module Expr =
        an returns resulting configuration
     *)                                                       
     let rec eval env ((st, i, o, r) as conf) expr = failwith "Not implemented"
-<<<<<<< HEAD
-=======
     and eval_list env conf xs =
       let vs, (st, i, o, _) =
         List.fold_left
@@ -141,7 +139,6 @@ module Expr =
           xs
       in
       (st, i, o, List.rev vs)
->>>>>>> e66732ae64a5fb1a62c91bc1776ff78bf20a15c4
          
     (* Expression parser. You can use the following terminals:
 
@@ -176,8 +173,6 @@ module Stmt =
        Takes an environment, a configuration and a statement, and returns another configuration. The 
        environment is the same as for expressions
     *)
-<<<<<<< HEAD
-=======
 
     let update st x v is =
       let rec update a v = function
@@ -191,7 +186,6 @@ module Stmt =
       in
       State.update x (match is with [] -> v | _ -> update (State.eval st x) v is) st
           
->>>>>>> e66732ae64a5fb1a62c91bc1776ff78bf20a15c4
     let rec eval env ((st, i, o, r) as conf) k stmt = failwith "Not implemented"
          
     (* Statement parser *)
