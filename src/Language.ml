@@ -7,11 +7,17 @@ open GT
 open Ostap
 open Combinators
 
+let rec listInit i size f = 
+	if i < size
+		then (f i) :: (listInit (i + 1) size f) 
+	else 
+		[]
+
 (* Values *)
 module Value =
   struct
 
-    @type t = Int of int | String of string | Array of t list with show
+    @type t = Int of int | String of string | Array of t list | Sexp of string * t list with show
 
     let to_int = function 
     | Int n -> n 
@@ -30,8 +36,12 @@ module Value =
     let of_string s = String s
     let of_array  a = Array  a
 
+    let tag_of = function
+    | Sexp (t, _) -> t
+    | _ -> failwith "symbolic expression expected"
+
     let update_string s i x = String.init (String.length s) (fun j -> if j = i then x else s.[j])
-    let update_array  a i x = List.init   (List.length a)   (fun j -> if j = i then x else List.nth a j)
+    let update_array  a i x = listInit 0   (List.length a)   (fun j -> if j = i then x else List.nth a j)
 
   end
        
@@ -181,7 +191,39 @@ module Expr =
       | "!!" -> fun x y -> bti (itb x || itb y)
       | _    -> failwith (Printf.sprintf "Unknown binary operator %s" op)    
     
-    let rec eval env ((st, i, o, r) as conf) expr = failwith "Not implemented"
+      let rec eval env ((st, i, o, r) as conf) exp = 
+        match exp with
+         Const c -> (st, i, o, Some (Value.of_int c))
+         |Var v -> (st, i, o, Some (State.eval st v))
+	 |Call(f_name, args) -> 
+		let conf, args = 
+			List.fold_left (fun (conf', evaled) expr -> 
+                		let (_, _, _, Some v) as conf' = eval env conf' expr in
+                        	(conf', evaled @ [v])) (conf, []) args 
+		in
+            	env#definition env f_name args conf
+	 |Binop(op, left, right) ->
+		let (st, i, o, Some left) = eval env conf left in
+		let (st, i, o, Some right) =  eval env (st, i, o, Some left) right in
+		let left = Value.to_int left in
+		let right = Value.to_int right in
+		(st, i, o, Some (Value.of_int (to_func op left right)))	
+	 |Array arr -> let (st, i, o, arr) = eval_list env conf arr in
+		(st, i, o, Some (Value.of_array arr))
+	 |String str -> (st, i, o, Some (Value.of_string str))
+	 |Elem(lst, index) -> let (st, i, o, Some index) = eval env conf index in
+		let (st, i, o, Some lst) = eval env conf lst in
+          	(st, i, o, Some (match lst with
+			Value.Array arr -> List.nth arr @@ Value.to_int index
+            		|Value.String str -> Value.of_int @@ Char.code @@ String.get str @@ Value.to_int index)
+		)
+	 |Length lst -> let (st, i, o, Some lst) = eval env conf lst in
+		(st, i, o, Some (match lst with
+	        	Value.Array arr -> Value.of_int @@ List.length arr
+			|Value.String str -> Value.of_int @@ String.length str)
+		)
+	 |Sexp(str, lst) -> let (st, i, o, lst) = eval_list env conf lst in
+		(st, i, o, Some (Value.Sexp (str, lst))) 
     and eval_list env conf xs =
       let vs, (st, i, o, _) =
         List.fold_left
@@ -200,7 +242,32 @@ module Expr =
          DECIMAL --- a decimal constant [0-9]+ as a string                                                                                                                  
     *)
     ostap (                                      
-      parse: empty {failwith "Not implemented"}
+      parse: expr;                                    
+      expr:
+      !(Ostap.Util.expr 
+          (fun x -> x)
+	  (Array.map (fun (a, s) -> a, 
+          	List.map  (fun s -> ostap(- $(s)), (fun x y -> Binop (s, x, y))) s
+    	  )
+          [|                
+		`Lefta, ["!!"];
+		`Lefta, ["&&"];
+		`Nona, ["=="; "!="; "<="; "<"; ">="; ">"];
+		`Lefta, ["+" ; "-"];
+		`Lefta, ["*" ; "/"; "%"];
+          |] 
+	)
+	primary);
+      primary: o:obj m:(-"[" i:parse -"]" {`Elem i} 
+        	| -"." %"length" {`Len}
+        ) * {List.fold_left (fun x -> function `Elem i -> Elem (x, i) | `Len -> Length x) o m};
+      obj: n:DECIMAL {Const n} 
+	| x:IDENT s:("(" args:!(Util.list0)[expr] ")" {Call (x, args)} | empty {Var x}) {s} 
+        | str:STRING {String (String.sub str 1 (String.length str - 2))}
+        | c:CHAR {Const (Char.code c)}
+        | "`" t:IDENT args:(-"(" !(Util.list)[parse] -")")? {Sexp (t, match args with None -> [] | Some args -> args)}
+        | -"[" elements:!(Util.list0)[parse] -"]" {Array elements}
+	| -"(" parse -")"
     )
     
   end
@@ -222,7 +289,10 @@ module Stmt =
 
         (* Pattern parser *)                                 
         ostap (
-          parse: empty {failwith "Not implemented"}
+          parse:  
+            "_" {Wildcard}
+            | "`" str:IDENT lst:(-"(" !(Ostap.Util.list)[parse] -")")? {Sexp (str, match lst with None -> [] | Some lst -> lst)}
+            | x:IDENT {Ident x}
         )
         
         let vars p =
@@ -262,11 +332,108 @@ module Stmt =
       in
       State.update x (match is with [] -> v | _ -> update (State.eval st x) v is) st
 
-    let rec eval env ((st, i, o, r) as conf) k stmt = failwith "Not implemented"
-                                                        
+    let rec eval env ((st, i, o, r) as conf) k stmt = 
+     	match stmt with
+		Assign(x, indices, exp) -> let (_, _, _, indices) = Expr.eval_list env conf indices in
+			let (st, i, o, Some exp_value) = Expr.eval env conf exp in
+			eval env ((update st x exp_value indices), i, o, r) Skip k
+		|Seq(left, right) -> eval env conf (if k = Skip then right else Seq (right, k)) left
+		|Skip -> if k = Skip then conf else eval env conf Skip k
+		|If(condition, true_body, false_body) -> let (st, i, o, Some exp_value) = Expr.eval env conf condition in
+			eval env (st, i, o, Some exp_value) k (if Value.to_int exp_value <> 0 then true_body else false_body)
+		|While(condition, body) -> let (st, i, o, Some exp_value) = Expr.eval env conf condition in 
+			if (Value.to_int exp_value <> 0)
+				then eval env (st, i, o, Some exp_value) 
+					(if k = Skip then While(condition, body) else Seq (While(condition, body), k)) 
+					body
+			else eval env (st, i, o, Some exp_value) Skip k
+		|Repeat(body, condition) -> eval env conf k (Seq (
+						  			body, 
+						  			While(Expr.Binop("==", condition, Expr.Const(0)), body)
+					       		         ))
+        	|Call(func_name, args) -> let conf = Expr.eval env conf (Expr.Call(func_name, args)) in
+			eval env conf Skip k
+        	|Return exp -> (match exp with
+          		None -> conf
+          		|Some exp -> Expr.eval env conf exp)
+    		|Case(exp, branches) -> let (st, i, o, Some exp_value) = Expr.eval env conf exp in
+      			let rec match_branch exp branch =
+        			(match (exp, branch) with
+         				_, Pattern.Wildcard -> Some []
+         				|exp, Pattern.Ident x -> Some [x, exp]
+         				|Value.Sexp(left_str, left_lst), Pattern.Sexp(right_str, right_lst) 
+						when (left_str = right_str && List.length left_lst = List.length right_lst) ->
+           						List.fold_left2 (fun x y z -> 
+								match (x, (match_branch y z)) with
+        								_, None -> None
+       								|None, _ -> None
+        								|Some x, Some y -> Some (x @ y) 
+							) (Some []) left_lst right_lst
+         				|_ -> None
+				) 
+			in
+      			let rec match_branches = function
+        			(first, next)::rest ->
+          				(match (match_branch exp_value first) with
+          					|None -> match_branches rest
+          					|Some branch -> let n = List.fold_left (fun x (y, z) -> State.bind y z x) 								State.undefined branch 
+							in
+            						eval env (State.push st n (List.map fst branch), i, o, None) k 
+								(Seq(next, Leave)))
+        					|[] -> eval env conf Skip k 
+			in
+      			match_branches branches
+    		|Leave -> eval env (State.drop st, i, o, r) Skip k
+
+    (* Used in statement parser
+
+         val parseElseBody : t -> t
+
+       Takes an else body from parser, and returns else body for evaluator
+    *)
+    let parseElseBody else_body =
+	match else_body with
+	None -> Skip
+      		|Some body -> body
+
+    (* Used in statement parser
+
+         val parseFalseBodies : (Expr.t * t) list -> t -> t
+
+       Takes an elif bodies and else body from parser, and returns elif and else bodies for evaluator
+    *)
+    let rec parseFalseBodies elif_bodies else_body =
+    	match elif_bodies with
+      		[] -> else_body
+      		|(condition, body)::tail -> If(condition, body, parseFalseBodies tail else_body) 
+                                                       
     (* Statement parser *)
     ostap (
-      parse: empty {failwith "Not implemented"}
+      parse: statements;
+      statements:
+        !(Ostap.Util.expr
+           (fun x -> x)
+           [|
+             `Righta, [ostap (";"), (fun l r -> Seq(l, r))]
+           |]
+           stmt
+	);
+      stmt: x:IDENT indices:(-"[" !(Expr.parse) -"]")* ":=" y:!(Expr.expr) {Assign(x, indices, y)}
+	    | %"if" condition:!(Expr.expr) 
+		%"then" true_body:statements
+		elif_bodies:(%"elif"!(Expr.expr) %"then" statements)* 
+		else_body:(%"else" statements)?
+        	%"fi"
+        	{If(condition, true_body, parseFalseBodies elif_bodies (parseElseBody else_body))}
+	    | %"skip" {Skip}
+	    | %"while" condition:!(Expr.expr) %"do" body:statements %"od" {While(condition, body)}
+	    | %"for" init:statements "," condition:!(Expr.expr) "," step:statements %"do" body:statements %"od"
+		{Seq(init, While(condition, Seq(body, step)))}
+	    | %"repeat" body:statements %"until" condition:!(Expr.expr) {Repeat(body, condition)}
+	    | func:IDENT "(" args:!(Expr.parse)* ")" {Call(func, args)}
+	    | %"return" exp:!(Expr.expr)? {Return exp}
+	    | %"case" exp:!(Expr.parse) %"of" branches:!(Ostap.Util.listBy)[ostap ("|")][case_branch] %"esac" {Case (exp, branches)};
+     case_branch: pattern:!(Pattern.parse) "->" action:!(parse) {pattern, action}
     )
       
   end
@@ -279,7 +446,10 @@ module Definition =
     type t = string * (string list * string list * Stmt.t)
 
     ostap (     
-      parse: empty {failwith "Not implemented"}
+      argument: IDENT;
+      parse: %"fun" functionName:IDENT "(" args: !(Util.list0 argument) ")"
+        locals: (%"local" !(Util.list argument))?
+        "{" body: !(Stmt.parse) "}" { (functionName, (args, (match locals with None -> [] | Some l -> l), body))}
     )
 
   end

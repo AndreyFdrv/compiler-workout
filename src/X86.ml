@@ -121,11 +121,12 @@ let compile env code =
           let env, pushs = push_args env [] n in
           let pushs      =
             match f with
-            | "Barray" -> List.rev @@ (Push (L n))     :: pushs
+            | "Barray" | "Bsexp" -> List.rev @@ (Push (L n))     :: pushs
+            | "Belem" -> List.rev pushs
             | "Bsta"   ->
                let x::v::is = List.rev pushs in               
                is @ [x; v] @ [Push (L (n-2))]
-            | _  -> List.rev pushs 
+            | _  -> pushs 
           in
           env, pushr @ pushs @ [Call f; Binop ("+", L (n*4), esp)] @ (List.rev popr)
       in
@@ -139,13 +140,11 @@ let compile env code =
   	  | CONST n ->
              let s, env' = env#allocate in
 	     (env', [Mov (L n, s)])
-               
           | STRING s ->
              let s, env = env#string s in
              let l, env = env#allocate in
              let env, call = call env ".string" 1 false in
              (env, Mov (M ("$" ^ s), l) :: call)
-             
 	  | LD x ->
              let s, env' = (env#global x)#allocate in
              env',
@@ -251,6 +250,25 @@ let compile env code =
              else env, [Jmp env#epilogue]
              
           | CALL (f, n, p) -> call env f n p
+	  | SEXP (str, n) -> 
+		let rec computeInt str length acc i = 
+  			if (i >= length) then
+    				acc
+  			else
+				let charToInt = function
+					c when c <= 'Z' -> Char.code c - 64
+					|'_' -> 53
+					|c -> Char.code c - 70
+				in
+    				computeInt str length ((acc lsl 6) lor charToInt str.[i]) (i + 1)
+		in
+		let strToInt str = 
+			let length = String.length str in
+			let str = String.sub str 0 (if length < 5 then length else 5) in 
+			computeInt str length 0 0
+		in
+		let env, code = call env ".sexp" (n + 1) true in
+		env, [Push (L (strToInt str))] @ code
         in
         let env'', code'' = compile' env' scode' in
 	env'', code' @ code''
@@ -264,7 +282,7 @@ module S = Set.Make (String)
 module M = Map.Make (String)
 
 (* Environment implementation *)
-let make_assoc l = List.combine l (List.init (List.length l) (fun x -> x))
+let make_assoc l = List.combine l (Language.listInit 0 (List.length l) (fun x -> x))
                      
 class env =
   object (self)
